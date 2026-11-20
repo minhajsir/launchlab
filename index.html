@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rocket Rebuild</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #171a1f;
+    --panel: #20252b;
+    --track: #313840;
+    --cream: #ece4cb;
+    --dim: #a9a590;
+    --copper: #c4622d;
+    --brass: #ccc550;
+    --alert: #e5593f;
+    --font: 'Barlow Condensed', 'Arial Narrow', 'Helvetica Neue', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #aebbcb; overflow: hidden; font-family: var(--font); }
+  canvas { display: block; touch-action: none; }
+  [hidden] { display: none !important; }
+
+  #ui {
+    position: fixed; inset: 0; pointer-events: none; color: var(--cream);
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .hit { pointer-events: auto; }
+
+  .card {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(560px, calc(100% - 28px)); max-height: calc(100% - 28px); overflow: auto;
+    background: var(--ink); border-radius: 14px; padding: 26px 26px 22px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, .45);
+  }
+  .card .row { display: flex; gap: 22px; align-items: flex-start; }
+  .card .copy { flex: 1; min-width: 0; }
+  .goal { width: 118px; flex: none; }
+  .goal img { display: block; width: 100%; aspect-ratio: 349 / 540; object-fit: cover; border-radius: 8px; border: 1px solid var(--track); }
+  .goal span { display: block; margin-top: 6px; font-size: 15px; color: var(--dim); text-align: center; }
+  h1 { margin: 0; font-size: clamp(44px, 11vw, 64px); line-height: .95; font-weight: 700; letter-spacing: .005em; }
+  .sub { margin: 8px 0 18px; font-size: 21px; color: var(--brass); font-weight: 500; }
+  ol.steps { margin: 0 0 22px; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 9px; }
+  ol.steps li { counter-increment: s; display: grid; grid-template-columns: 26px 1fr; gap: 8px; font-size: 20px; line-height: 1.12; font-weight: 500; }
+  ol.steps li::before { content: counter(s); color: var(--copper); font-weight: 700; font-size: 24px; line-height: 1; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  button {
+    font: 700 22px/1 var(--font); letter-spacing: .01em; color: var(--ink); background: var(--cream);
+    border: 0; border-radius: 10px; padding: 14px 20px; cursor: pointer; min-height: 48px;
+  }
+  button.primary { background: var(--copper); color: #fff; }
+  button.ghost { background: transparent; color: var(--cream); box-shadow: inset 0 0 0 2px var(--track); }
+  button[aria-pressed="true"] { background: var(--brass); color: var(--ink); box-shadow: none; }
+  button:focus-visible { outline: 3px solid var(--brass); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: default; }
+  .note { margin: 14px 0 0; font-size: 17px; color: var(--dim); min-height: 1.2em; }
+
+  #banner {
+    position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
+    background: var(--ink); border-radius: 12px; padding: 12px 20px; font-size: 22px; font-weight: 600;
+    text-align: center; max-width: calc(100% - 28px); box-shadow: 0 8px 30px rgba(0, 0, 0, .35);
+  }
+  #banner small { display: block; font-size: 17px; color: var(--dim); font-weight: 500; margin-top: 2px; }
+
+  #hud {
+    position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+    width: min(640px, calc(100% - 24px)); background: var(--ink); border-radius: 14px; padding: 14px 16px 14px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, .4);
+  }
+  .meters { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+  .meters b { font-size: 30px; font-weight: 700; }
+  .meters span { font-size: 19px; color: var(--dim); font-weight: 500; }
+  #wrong b { color: var(--cream); }
+  #wrong.bump b { color: var(--alert); }
+  #segs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; height: 14px; margin-bottom: 12px; }
+  #segs i { background: var(--track); border-radius: 2px; transition: background .25s; }
+  #segs i.on { background: var(--copper); }
+  #segs i.on:nth-child(3n) { background: var(--brass); }
+  .controls { display: flex; gap: 8px; }
+  .controls button { flex: 1; padding: 12px 8px; font-size: 20px; }
+  #keys { margin: 10px 0 0; font-size: 16px; color: var(--dim); text-align: center; }
+
+  #toast {
+    position: absolute; left: 50%; bottom: 212px; transform: translateX(-50%); background: var(--cream); color: var(--ink);
+    padding: 10px 18px; border-radius: 10px; font-size: 22px; font-weight: 700; max-width: calc(100% - 28px); text-align: center;
+  }
+  #toast.bad { background: var(--alert); color: #fff; }
+  #card-done { top: auto; bottom: 14px; transform: translateX(-50%); width: min(460px, calc(100% - 28px)); padding: 18px 22px; }
+  #card-done h1 { font-size: clamp(38px, 9vw, 52px); }
+  #card-done .sub { margin: 4px 0 8px; }
+  .stats { display: flex; gap: 28px; margin: 6px 0 20px; }
+  .stats div b { display: block; font-size: 46px; line-height: 1; }
+  .stats div span { font-size: 18px; color: var(--dim); }
+
+  #loading { position: absolute; inset: 0; display: grid; place-items: center; background: #171a1f; font-size: 26px; font-weight: 600; color: var(--cream); pointer-events: auto; }
+  @media (max-width: 440px) { .card .row { flex-direction: column-reverse; } .goal { width: 90px; } }
+  @media (prefers-reduced-motion: reduce) { #segs i { transition: none; } }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/examples/jsm/" } }
+</script>
+</head>
+<body>
+<div id="ui">
+  <div id="loading">Loading rocket…</div>
+
+  <section id="card-title" class="card hit" hidden aria-labelledby="t-title">
+    <div class="row">
+      <div class="copy">
+        <h1 id="t-title">Rocket Rebuild</h1>
+        <p class="sub">Fifteen broken parts. One rocket.</p>
+        <ol class="steps">
+          <li>Scan a flat table or floor, then tap to set down the build pad.</li>
+          <li>Grab a piece with the trigger, a pinch or your finger.</li>
+          <li>Carry it to the pad and let go near its spot. It snaps in.</li>
+          <li>Turn a piece with the grip button or Rotate.</li>
+        </ol>
+        <div class="actions">
+          <button id="btn-ar" class="primary" disabled>Start in AR</button>
+          <button id="btn-desk" class="ghost">Play on screen</button>
+        </div>
+        <p id="support" class="note"></p>
+      </div>
+      <figure class="goal" style="margin:0"><img src="assets/rocket.jpg" alt="The finished rocket"><span>The goal</span></figure>
+    </div>
+  </section>
+
+  <div id="banner" class="hit" hidden></div>
+
+  <div id="toast" hidden role="status"></div>
+
+  <section id="hud" class="hit" hidden>
+    <div class="meters">
+      <div id="progress"><b id="count">0 of 15</b> <span>parts placed</span></div>
+      <div id="wrong"><span>Wrong moves</span> <b id="wrong-n">0</b></div>
+    </div>
+    <div id="segs" role="progressbar" aria-label="Rocket progress" aria-valuemin="0" aria-valuemax="15" aria-valuenow="0"></div>
+    <div class="controls">
+      <button id="btn-hint" class="ghost" aria-pressed="false">Hints</button>
+      <button id="btn-rotate" class="ghost">Rotate</button>
+      <button id="btn-restart" class="ghost">Restart</button>
+    </div>
+    <p id="keys" hidden>Drag a piece, scroll to lift it, Q and E to turn it. Drag empty space to look around.</p>
+  </section>
+
+  <section id="card-done" class="card hit" hidden aria-labelledby="d-title">
+    <h1 id="d-title">Rocket rebuilt</h1>
+    <p class="sub" id="d-line"></p>
+    <div class="stats">
+      <div><b id="d-time">0:00</b><span>time</span></div>
+      <div><b id="d-wrong">0</b><span>wrong moves</span></div>
+    </div>
+    <div class="actions">
+      <button id="btn-again" class="primary">Play again</button>
+    </div>
+  </section>
+</div>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
