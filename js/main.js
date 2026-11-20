@@ -6,7 +6,8 @@ import { buildPieces, convertMaterial, S, PAD_H } from './pieces.js';
 /* ------------------------------------------------------------------ config */
 const FBX_URL = 'assets/rocket.fbx';
 const GOAL_IMG = 'assets/rocket.jpg';
-const SNAP = 0.065;                                   // metres: how close a piece must be to snap
+const SNAP = 0.065;                                   // metres: how close counts as 'trying a spot' for a wrong piece
+const SNAP_SAME = 0.09;                               // metres: how close the right piece must be to snap
 const YAW_TOL = THREE.MathUtils.degToRad(22);         // fins must face the right way within this
 const ROT_STEP = THREE.MathUtils.degToRad(15);
 const REF_POS = new THREE.Vector3(0.62, 0, -0.12);    // the finished-rocket display, in table space
@@ -192,7 +193,7 @@ function release(p) {
   for (const s of slots) {
     if (s.filled || s.kind !== p.kind) continue;
     const d = pos.distanceTo(s.pos);
-    if (d >= SNAP) continue;
+    if (d >= SNAP_SAME) continue;
     const err = p.sym ? 0 : Math.abs(angDiff(p.group.rotation.y, p.phi - s.phi));
     if (err <= YAW_TOL) { if (d < bestD) { best = s; bestD = d; } } else needsTurn = true;
   }
@@ -243,6 +244,24 @@ function haptic(p, strength, ms) {
 }
 
 /* ------------------------------------------------------- picking + input */
+const HOVER = 0.05;      // a grabbed piece lifts this far off the table
+const MAGNET = 0.2;      // horizontal reach (m) of the height assist around a matching slot
+// Pulls a carried piece up (or down) to the height of the nearest matching empty slot when it is
+// over that spot, so you never need to judge height in the air.
+function assist(p, v) {
+  let best = null, bd = MAGNET;
+  for (const s of slots) {
+    if (s.filled || s.kind !== p.kind) continue;
+    const h = Math.hypot(v.x - s.pos.x, v.z - s.pos.z);
+    if (h < bd) { bd = h; best = s; }
+  }
+  if (!best) return;
+  const w = THREE.MathUtils.smoothstep(1 - bd / MAGNET, 0, 1);
+  const wy = Math.min(1, w * 2.2);                       // height catches up first, then position
+  v.y = THREE.MathUtils.lerp(v.y, best.pos.y, wy);
+  v.x = THREE.MathUtils.lerp(v.x, best.pos.x, w * 0.75);
+  v.z = THREE.MathUtils.lerp(v.z, best.pos.z, w * 0.75);
+}
 const raycaster = new THREE.Raycaster();
 function pickPiece(ray) {
   let best = null, bd = Infinity; const c = new THREE.Vector3(), hit = new THREE.Vector3(), sph = new THREE.Sphere();
@@ -296,7 +315,7 @@ function onSelectStart(c) {
   if (!hit) return;
   const p = hit.piece, u = c.userData;
   const tgt = ray.origin.clone().addScaledVector(ray.direction, hit.dist); root.worldToLocal(tgt);
-  u.piece = p; u.lastPiece = p; u.dist = hit.dist; u.off.copy(p.group.position).sub(tgt);
+  u.piece = p; u.lastPiece = p; u.lift = 0; u.dist = hit.dist; u.off.copy(p.group.position).sub(tgt);
   p.held = c; p.vy = 0;
   beep(330, 0.05); haptic(p, 0.3, 30);
 }
@@ -328,7 +347,8 @@ dom.addEventListener('pointerdown', (e) => {
 dom.addEventListener('pointermove', (e) => {
   const d = mouse.drag; if (!d) return;
   const pt = dragPoint(mouseRay(e), d.y); if (!pt) return;
-  d.p.group.position.set(pt.x + d.off.x, Math.max(d.y, d.p.restY), pt.z + d.off.z);
+  const v = new THREE.Vector3(pt.x + d.off.x, Math.max(d.y, d.p.restY + HOVER), pt.z + d.off.z);
+  assist(d.p, v); d.p.group.position.copy(v);
 });
 function endDrag() { const d = mouse.drag; if (!d) return; mouse.drag = null; controls.enabled = true; release(d.p); }
 dom.addEventListener('pointerup', endDrag);
@@ -558,9 +578,13 @@ function update(dt, frame) {
     const p = c.userData.piece; if (!p) continue;
     const ray = ctrlRay(c);
     tmp.copy(ray.origin).addScaledVector(ray.direction, c.userData.dist); root.worldToLocal(tmp).add(c.userData.off);
-    tmp.y = Math.max(tmp.y, p.restY);
+    const gp = c.userData.src?.gamepad;
+    const ay = gp?.axes?.[3] || 0;                                   // thumbstick up/down lifts
+    if (Math.abs(ay) > 0.25) c.userData.lift = THREE.MathUtils.clamp((c.userData.lift || 0) - ay * dt * 0.35, -0.1, 0.5);
+    tmp.y = Math.max(tmp.y + (c.userData.lift || 0), p.restY + HOVER);
+    assist(p, tmp);
     p.group.position.lerp(tmp, 1 - Math.pow(1e-4, dt));
-    const ax = c.userData.src?.gamepad?.axes?.[2] || 0;
+    const ax = gp?.axes?.[2] || 0;
     if (Math.abs(ax) > 0.25) p.group.rotation.y -= ax * dt * 3;
   }
 
@@ -568,7 +592,7 @@ function update(dt, frame) {
   for (const s of slots) s.near = false;
   for (const p of pieces) {
     if (!p.held) continue;
-    for (const s of slots) if (!s.filled && s.kind === p.kind && p.group.position.distanceTo(s.pos) < 0.14) s.near = true;
+    for (const s of slots) if (!s.filled && s.kind === p.kind && Math.hypot(p.group.position.x - s.pos.x, p.group.position.z - s.pos.z) < MAGNET) s.near = true;
   }
   for (const s of slots) {
     s.ghost.visible = !s.filled && (game.hints || s.near);

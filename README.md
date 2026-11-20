@@ -24,10 +24,15 @@ or tunnel your local server (`npx localtunnel --port 8000`, ngrok, or Cloudflare
 | --- | --- | --- |
 | Place the pad | trigger or pinch on the ring | tap |
 | Grab and carry | hold trigger or pinch, aim at a piece | touch and drag on a piece |
-| Turn a piece | thumbstick, grip button, or Rotate | Rotate button |
+| Turn a piece | thumbstick left/right, grip button, or Rotate | Rotate button |
+| Lift or lower | thumbstick up/down (optional, see below) | not needed |
 | Hints, restart | buttons on the floating panel | buttons at the bottom |
 
 Headsets show the HUD as a panel floating behind the pad. Phones use the on-screen HUD.
+
+Height is mostly automatic: a grabbed piece hovers above the table, and when you carry it over
+its matching spot it is pulled up to the right height, so you can stack parts without judging
+height in the air. Releasing within about 9 cm of the right spot snaps it.
 
 ## How the model is used
 
@@ -42,7 +47,8 @@ rotation around the vertical axis.
 ## Tuning (top of `js/main.js` and `js/pieces.js`)
 
 - `S` (pieces.js): metres per FBX unit. 0.025 makes the rocket 42 cm tall.
-- `SNAP`: how close a piece must be to snap, in metres.
+- `SNAP_SAME`: how close the right piece must be to snap, in metres. `SNAP` is the stricter range that counts a wrong piece as a wrong move.
+- `MAGNET`: how far from a spot the height assist reaches.
 - `YAW_TOL`: how far off a fin may face and still snap.
 - `COPPER_BOOST` (pieces.js): lifts the near-black fin colour toward the copper in rocket.jpg.
 
