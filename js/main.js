@@ -8,7 +8,6 @@ const FBX_URL = 'assets/rocket.fbx';
 const GOAL_IMG = 'assets/rocket.jpg';
 const SNAP = 0.065;                                   // metres: how close counts as 'trying a spot' for a wrong piece
 const SNAP_SAME = 0.09;                               // metres: how close the right piece must be to snap
-const YAW_TOL = THREE.MathUtils.degToRad(22);         // fins must face the right way within this
 const ROT_STEP = THREE.MathUtils.degToRad(15);
 const REF_POS = new THREE.Vector3(0.62, 0, -0.12);    // the finished-rocket display, in table space
 const UP = new THREE.Vector3(0, 1, 0);
@@ -187,18 +186,17 @@ function wrong(p, msg) {
 }
 
 function release(p) {
+  if (p.target) { p.group.position.copy(p.target); p.target = null; }   // judge where it was heading, not where it lagged
   p.held = null; lastHeld = p; lastHeldAt = now();
   const pos = p.group.position;
-  let best = null, bestD = Infinity, needsTurn = false;
+  let best = null, bestD = Infinity;
   for (const s of slots) {
     if (s.filled || s.kind !== p.kind) continue;
     const d = pos.distanceTo(s.pos);
     if (d >= SNAP_SAME) continue;
-    const err = p.sym ? 0 : Math.abs(angDiff(p.group.rotation.y, p.phi - s.phi));
-    if (err <= YAW_TOL) { if (d < bestD) { best = s; bestD = d; } } else needsTurn = true;
+    if (d < bestD) { best = s; bestD = d; }   // any facing is fine: the snap turns the part into place
   }
   if (best) return snapTo(p, best);
-  if (needsTurn) return wrong(p, 'Right spot, wrong way. Turn it.');
   for (const s of slots) {
     if (!s.filled && s.kind !== p.kind && pos.distanceTo(s.pos) < SNAP * 0.75) return wrong(p, 'That piece belongs somewhere else.');
   }
@@ -248,7 +246,7 @@ const HOVER = 0.05;      // a grabbed piece lifts this far off the table
 const MAGNET = 0.2;      // horizontal reach (m) of the height assist around a matching slot
 // Pulls a carried piece up (or down) to the height of the nearest matching empty slot when it is
 // over that spot, so you never need to judge height in the air.
-function assist(p, v) {
+function assist(p, v, dt = 0.016) {
   let best = null, bd = MAGNET;
   for (const s of slots) {
     if (s.filled || s.kind !== p.kind) continue;
@@ -261,13 +259,17 @@ function assist(p, v) {
   v.y = THREE.MathUtils.lerp(v.y, best.pos.y, wy);
   v.x = THREE.MathUtils.lerp(v.x, best.pos.x, w * 0.75);
   v.z = THREE.MathUtils.lerp(v.z, best.pos.z, w * 0.75);
+  if (!p.sym) {                                          // fins turn to face the right way on their own
+    const cur = p.group.rotation.y, need = p.phi - best.phi;
+    p.group.rotation.y = cur + angDiff(need, cur) * Math.min(1, wy) * (1 - Math.pow(1e-3, dt));
+  }
 }
 const raycaster = new THREE.Raycaster();
 function pickPiece(ray) {
   let best = null, bd = Infinity; const c = new THREE.Vector3(), hit = new THREE.Vector3(), sph = new THREE.Sphere();
   for (const p of pieces) {
     if (p.locked || p.held || p.tween) continue;
-    p.group.getWorldPosition(c); sph.set(c, p.radius * 1.2 + 0.02);
+    p.group.getWorldPosition(c); sph.set(c, p.radius * 1.3 + 0.035);
     if (ray.intersectSphere(sph, hit)) { const d = hit.distanceTo(ray.origin); if (d < bd) { bd = d; best = p; } }
   }
   return best ? { piece: best, dist: bd } : null;
@@ -335,29 +337,28 @@ function dragPoint(ray, y) {
 }
 dom.addEventListener('pointerdown', (e) => {
   unlockAudio();
-  if (game.mode !== 'desktop' || game.phase !== 'play' || e.button !== 0) return;
+  if (game.mode === 'xr' || game.phase !== 'play' || e.button !== 0) return;
   const hit = pickPiece(mouseRay(e));
   if (!hit) return;
   e.stopImmediatePropagation();
   const p = hit.piece; p.held = 'mouse'; p.vy = 0;
   const y = p.group.position.y, pt = dragPoint(mouseRay(e), y);
-  mouse.drag = { p, y, off: pt ? p.group.position.clone().setY(0).sub(pt.setY(0)) : new THREE.Vector3() };
+  mouse.drag = { p, y, raw: null, off: pt ? p.group.position.clone().setY(0).sub(pt.setY(0)) : new THREE.Vector3() };
   controls.enabled = false; dom.setPointerCapture(e.pointerId); beep(330, 0.05);
 }, true);
 dom.addEventListener('pointermove', (e) => {
   const d = mouse.drag; if (!d) return;
   const pt = dragPoint(mouseRay(e), d.y); if (!pt) return;
-  const v = new THREE.Vector3(pt.x + d.off.x, Math.max(d.y, d.p.restY + HOVER), pt.z + d.off.z);
-  assist(d.p, v); d.p.group.position.copy(v);
+  d.raw = new THREE.Vector3(pt.x + d.off.x, Math.max(d.y, d.p.restY + HOVER), pt.z + d.off.z);
 });
-function endDrag() { const d = mouse.drag; if (!d) return; mouse.drag = null; controls.enabled = true; release(d.p); }
+function endDrag() { const d = mouse.drag; if (!d) return; mouse.drag = null; controls.enabled = game.mode === 'desktop'; release(d.p); }
 dom.addEventListener('pointerup', endDrag);
 dom.addEventListener('pointercancel', endDrag);
 dom.addEventListener('wheel', (e) => {
   const d = mouse.drag; if (!d) return;
   e.preventDefault(); e.stopImmediatePropagation();
   d.y = THREE.MathUtils.clamp(d.y - e.deltaY * 0.0006, d.p.restY, 0.62);
-  d.p.group.position.y = d.y;
+  if (d.raw) d.raw.y = Math.max(d.y, d.p.restY + HOVER);
 }, { passive: false, capture: true });
 addEventListener('keydown', (e) => {
   const p = mouse.drag?.p || pieces.find((q) => q.held);
@@ -369,15 +370,27 @@ addEventListener('keydown', (e) => {
 /* ------------------------------------------------------------- XR session */
 let hitSource = null, session = null, needDock = false;
 
+function arHelp() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (!window.isSecureContext) return 'AR needs a secure page. Open this game from an https:// link.';
+  if (ios) return 'iPhone and iPad browsers do not support WebXR AR. Tap Camera view instead.';
+  if (!navigator.xr) return 'This browser has no WebXR. On Android use Chrome, or tap Camera view.';
+  return '';
+}
 async function startAR() {
   unlockAudio();
+  const help = arHelp();
+  if (help) { $('#support').textContent = help; return; }
   try {
     session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['hit-test'],
       optionalFeatures: ['local-floor', 'dom-overlay', 'hand-tracking'],
       domOverlay: { root: $('#ui') },
     });
-  } catch (err) { $('#support').textContent = 'Could not start AR: ' + err.message; return; }
+  } catch (err) {
+    $('#support').textContent = `Could not start AR (${err.name}). Check that Google Play Services for AR is installed and camera access is allowed, or tap Camera view.`;
+    return;
+  }
   renderer.xr.setReferenceSpaceType('local-floor');
   await renderer.xr.setSession(session);
   const viewer = await session.requestReferenceSpace('viewer');
@@ -393,6 +406,62 @@ async function startAR() {
   });
   syncUI(); markDirty();
 }
+/* --------------------------------------- camera view: any phone, no WebXR needed */
+const CAM_H = 0.7;                       // assumed height of the phone above the table (m)
+const camVideo = document.createElement('video');
+camVideo.setAttribute('playsinline', ''); camVideo.muted = true;
+Object.assign(camVideo.style, { position: 'fixed', inset: '0', width: '100%', height: '100%', objectFit: 'cover', zIndex: '-1' });
+const orient = { q: new THREE.Quaternion(), a0: null, have: false };
+const _e = new THREE.Euler(), _q1 = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2), _q0 = new THREE.Quaternion(), _z = new THREE.Vector3(0, 0, 1);
+const camPoint = new THREE.Vector3();
+function onOrient(e) {
+  if (e.alpha == null) return;
+  if (orient.a0 === null) orient.a0 = e.alpha;
+  const D = Math.PI / 180, ang = (screen.orientation?.angle ?? window.orientation ?? 0) * D;
+  _e.set(e.beta * D, (e.alpha - orient.a0) * D, -e.gamma * D, 'YXZ');
+  orient.q.setFromEuler(_e).multiply(_q1).multiply(_q0.setFromAxisAngle(_z, -ang));
+  if (!orient.have) camera.quaternion.copy(orient.q);
+  orient.have = true;
+}
+async function startCam() {
+  unlockAudio();
+  const support = $('#support');
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) { support.textContent = 'Camera view needs a secure page. Open this game from an https:// link.'; return; }
+  try {
+    if (window.DeviceOrientationEvent?.requestPermission) {       // iOS asks for motion access
+      try { await DeviceOrientationEvent.requestPermission(); } catch { /* checked below: we warn if no tilt data arrives */ }
+    }
+    camVideo.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    document.body.prepend(camVideo); await camVideo.play();
+  } catch (err) { support.textContent = 'Could not start the camera: ' + err.message; return; }
+  addEventListener('deviceorientation', onOrient, true);
+  game.motionWarn = false;
+  setTimeout(() => { if (!orient.have) { game.motionWarn = true; syncUI(); } }, 2500);
+  document.documentElement.style.background = 'transparent'; document.body.style.background = 'transparent';   // let the camera feed show through
+  game.mode = 'cam'; game.domMode = true; game.phase = 'scan'; game.surfaceFound = false;
+  scene.background = null; floor.visible = false; controls.enabled = false;
+  camera.fov = 62; camera.updateProjectionMatrix(); camera.position.set(0, CAM_H, 0);
+  root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); hideTable(true);
+  syncUI(); markDirty();
+}
+function updateCamReticle() {
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  let found = false;
+  if (dir.y < -0.12) {
+    const t = -camera.position.y / dir.y;
+    if (t < 4) { camPoint.copy(camera.position).addScaledVector(dir, t); camPoint.y = 0; reticle.matrix.makeTranslation(camPoint.x, 0.002, camPoint.z); found = true; }
+  }
+  reticle.visible = found;
+  if (found !== game.surfaceFound) { game.surfaceFound = found; syncUI(); }
+}
+function placeCam() {
+  if (!game.surfaceFound) return;
+  root.position.set(camPoint.x, 0, camPoint.z);
+  root.rotation.y = Math.atan2(camera.position.x - camPoint.x, camera.position.z - camPoint.z);
+  hideTable(false); reticle.visible = false; scatter(); game.phase = 'play';
+  beep(600, 0.1, 'triangle'); toast('Pieces scattered'); syncUI(); markDirty();
+}
+
 function hideTable(h) { assembly.visible = !h; pad.visible = !h; refGroup.visible = !h; shadowCatcher.visible = !h; }
 
 function placeAtReticle() {
@@ -523,11 +592,18 @@ function syncUI() {
   $('#hud').hidden = !(dom && ph === 'play');
   $('#card-done').hidden = !(dom && ph === 'done');
   const banner = $('#banner');
-  banner.hidden = !(dom && xr && ph === 'scan');
-  if (!banner.hidden) banner.innerHTML = game.surfaceFound
-    ? 'Flat surface found<small>Point at the ring and tap to place the pad.</small>'
-    : 'Looking for a flat surface<small>Move your device slowly over a table or the floor.</small>';
+  const cam = game.mode === 'cam';
+  banner.hidden = !(dom && (xr || cam) && ph === 'scan');
+  if (!banner.hidden) banner.innerHTML = cam
+    ? (game.surfaceFound ? 'Table spotted<small>Tilt to move the ring, then tap Place.</small><button id="btn-place" class="primary">Place here</button>'
+                         : 'Aim at a table or the floor<small>Tilt the phone down until the ring appears.</small>')
+      + (game.motionWarn ? '<small>Tilt not detected. Allow motion access for this site in your browser settings.</small>' : '')
+    : (game.surfaceFound ? 'Flat surface found<small>Point at the ring and tap to place the pad.</small>'
+                         : 'Looking for a flat surface<small>Move your device slowly over a table or the floor.</small>');
   $('#keys').hidden = xr;
+  $('#keys').textContent = cam ? 'Drag a piece with your finger. Tilt the phone to look around.' : 'Drag a piece, scroll to lift it, Q and E to turn it. Drag empty space to look around.';
+  const touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  $('#btn-cam').hidden = xr || cam || !touch;
   const arBtn = $('#btn-ar');
   if (xr) { arBtn.textContent = 'Begin'; arBtn.disabled = false; $('#btn-desk').hidden = true; $('#support').hidden = true; }
   else { arBtn.textContent = 'Start in AR'; $('#btn-desk').hidden = false; $('#support').hidden = false; }
@@ -554,6 +630,8 @@ function updateToastDOM() {
 
 for (const el of document.querySelectorAll('#ui .hit')) el.addEventListener('beforexrselect', (e) => e.preventDefault());
 $('#btn-desk').addEventListener('click', startDesktop);
+$('#btn-cam').addEventListener('click', startCam);
+$('#banner').addEventListener('click', (e) => { if (e.target.id === 'btn-place') placeCam(); });
 $('#btn-ar').addEventListener('click', () => (game.mode === 'xr' ? act('start') : startAR()));
 $('#btn-hint').addEventListener('click', () => act('hint'));
 $('#btn-rotate').addEventListener('click', () => act('rotate'));
@@ -567,6 +645,10 @@ const tmp = new THREE.Vector3();
 
 function update(dt, frame) {
   handleHitTest(frame);
+  if (game.mode === 'cam') {
+    if (orient.have) camera.quaternion.slerp(orient.q, 0.4);
+    if (game.phase === 'scan') updateCamReticle(); else reticle.visible = false;
+  }
   if (game.mode === 'xr') {
     panel.visible = !game.domMode && game.phase !== 'loading';
     if (needDock && frame) { if (game.phase === 'play') dockToWorld(); else dockNow(); needDock = false; }
@@ -582,10 +664,18 @@ function update(dt, frame) {
     const ay = gp?.axes?.[3] || 0;                                   // thumbstick up/down lifts
     if (Math.abs(ay) > 0.25) c.userData.lift = THREE.MathUtils.clamp((c.userData.lift || 0) - ay * dt * 0.35, -0.1, 0.5);
     tmp.y = Math.max(tmp.y + (c.userData.lift || 0), p.restY + HOVER);
-    assist(p, tmp);
+    assist(p, tmp, dt);
+    p.target = (p.target || new THREE.Vector3()).copy(tmp);
     p.group.position.lerp(tmp, 1 - Math.pow(1e-4, dt));
     const ax = gp?.axes?.[2] || 0;
     if (Math.abs(ax) > 0.25) p.group.rotation.y -= ax * dt * 3;
+  }
+
+  const md = mouse.drag;   // mouse / touch drag: follow the pointer with the same assists as XR
+  if (md?.raw) {
+    tmp.copy(md.raw); assist(md.p, tmp, dt);
+    md.p.target = (md.p.target || new THREE.Vector3()).copy(tmp);
+    md.p.group.position.lerp(tmp, 1 - Math.pow(1e-4, dt));
   }
 
   // slot ghosts: shown by Hints, or when a held piece is near a matching slot
@@ -643,13 +733,14 @@ renderer.setAnimationLoop((t, frame) => { update(Math.min(clock.getDelta(), 0.05
   // Preview the pieces already assembled behind the title card
   for (const p of pieces) { p.group.position.copy(p.home); }
   const support = $('#support'), arBtn = $('#btn-ar');
-  if (navigator.xr) {
-    try {
-      const ok = await navigator.xr.isSessionSupported('immersive-ar');
-      arBtn.disabled = !ok;
-      support.textContent = ok ? 'Works best on a headset or an ARCore phone in Chrome.' : 'AR is not available on this device. You can still play on screen.';
-    } catch { support.textContent = 'AR is not available here. You can still play on screen.'; }
-  } else support.textContent = 'AR needs a WebXR browser over HTTPS. You can still play on screen.';
+  arBtn.disabled = false;
+  const help = arHelp();
+  let note = help;
+  if (!help) {
+    try { note = (await navigator.xr.isSessionSupported('immersive-ar')) ? 'AR is ready on this device.' : 'AR may not be supported here. Tap Start in AR to try, or use Camera view.'; }
+    catch { note = 'Tap Start in AR to try, or use Camera view.'; }
+  }
+  support.textContent = note;
   syncUI(); markDirty();
   window.game = game;   // handy for debugging in the console
   window.__rr = { pieces, slots, release, camera, root, THREE, S, panel, drawPanel };

@@ -15,7 +15,12 @@ For a headset or phone, host the folder on any HTTPS static host (GitHub Pages, 
 or tunnel your local server (`npx localtunnel --port 8000`, ngrok, or Cloudflare Tunnel).
 
 - Meta Quest: open the URL in Quest Browser, tap Start in AR.
-- Android phone: Chrome with ARCore, tap Start in AR, then tap to place.
+- Android phone: Chrome with ARCore, tap Start in AR, then tap to place. If AR cannot start, the
+  message under the buttons says why (page not on HTTPS, no WebXR, ARCore missing).
+- iPhone, iPad, or any phone without WebXR AR: tap Camera view. It shows your camera behind the
+  game and uses the motion sensors to look around. Tilt the phone down until the ring appears on
+  the table, tap Place here, then drag pieces with your finger. It has no surface detection or
+  position tracking, so the table stays put as you turn but does not shift as you walk.
 - Desktop: Play on screen. Drag a piece, scroll to lift it, Q and E to turn it.
 
 ## Controls in AR
@@ -30,7 +35,8 @@ or tunnel your local server (`npx localtunnel --port 8000`, ngrok, or Cloudflare
 
 Headsets show the HUD as a panel floating behind the pad. Phones use the on-screen HUD.
 
-Height is mostly automatic: a grabbed piece hovers above the table, and when you carry it over
+Height and facing are automatic: fins turn to the right angle as you carry them over a spot,
+and the snap rotates them into place. Height is mostly automatic too: a grabbed piece hovers above the table, and when you carry it over
 its matching spot it is pulled up to the right height, so you can stack parts without judging
 height in the air. Releasing within about 9 cm of the right spot snaps it.
 

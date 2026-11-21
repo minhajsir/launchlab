@@ -63,6 +63,7 @@
     background: var(--ink); border-radius: 12px; padding: 12px 20px; font-size: 22px; font-weight: 600;
     text-align: center; max-width: calc(100% - 28px); box-shadow: 0 8px 30px rgba(0, 0, 0, .35);
   }
+  #banner button { margin-top: 10px; width: 100%; }
   #banner small { display: block; font-size: 17px; color: var(--dim); font-weight: 500; margin-top: 2px; }
 
   #hud {
@@ -119,7 +120,8 @@
           <li>Turn a piece with the grip button or Rotate.</li>
         </ol>
         <div class="actions">
-          <button id="btn-ar" class="primary" disabled>Start in AR</button>
+          <button id="btn-ar" class="primary">Start in AR</button>
+          <button id="btn-cam" class="ghost" hidden>Camera view</button>
           <button id="btn-desk" class="ghost">Play on screen</button>
         </div>
         <p id="support" class="note"></p>
