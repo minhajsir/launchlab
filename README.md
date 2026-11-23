@@ -23,17 +23,32 @@ or tunnel your local server (`npx localtunnel --port 8000`, ngrok, or Cloudflare
   position tracking, so the table stays put as you turn but does not shift as you walk.
 - Desktop: Play on screen. Drag a piece, scroll to lift it, Q and E to turn it.
 
-## Controls in AR
+## Meta Quest (3, 3S, Pro)
 
-| Action | Headset | Phone |
-| --- | --- | --- |
-| Place the pad | trigger or pinch on the ring | tap |
-| Grab and carry | hold trigger or pinch, aim at a piece | touch and drag on a piece |
-| Turn a piece | thumbstick left/right, grip button, or Rotate | Rotate button |
-| Lift or lower | thumbstick up/down (optional, see below) | not needed |
-| Hints, restart | buttons on the floating panel | buttons at the bottom |
+1. Open the page in Quest Browser and choose Start in AR (passthrough).
+2. The menu floats about 85 cm in front of you and drifts after your gaze. Press Start.
+3. Point a controller, or your hand, at a table or the floor. A ring shows where the build pad and
+   the 50 cm play area will go. Pinch or squeeze the trigger to place the game.
+   No ring? Choose Place ahead: it sets the game on the floor 90 cm in front of you.
+   Quest finds surfaces from your Space Setup room scan, so scan your room first if no ring appears.
+4. Pick up pieces:
+   - Hands: pinch thumb and index finger on a piece. It glows when your hand is close enough.
+   - Controllers: touch a piece with the tip and squeeze the trigger, or aim at it from a distance
+     and squeeze the trigger.
+5. Carry a piece over its spot. It rises to the right height, turns the right way, and snaps in
+   when you let go. The Exit button on the floating menu ends the session.
 
-Headsets show the HUD as a panel floating behind the pad. Phones use the on-screen HUD.
+Menu buttons are pressed by pointing and pinching or squeezing the trigger.
+
+## Other controls
+
+| Action | Phone AR | Camera view | Desktop |
+| --- | --- | --- | --- |
+| Place the pad | tap | Place here button | automatic |
+| Grab and carry | touch and drag | touch and drag | drag with the mouse |
+| Lift or lower | automatic | automatic | scroll wheel |
+| Turn a piece | automatic | automatic | Q and E |
+| Exit | Exit button | Exit button | close the tab |
 
 Height and facing are automatic: fins turn to the right angle as you carry them over a spot,
 and the snap rotates them into place. Height is mostly automatic too: a grabbed piece hovers above the table, and when you carry it over

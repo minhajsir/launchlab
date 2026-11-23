@@ -54,6 +54,7 @@
   button.primary { background: var(--copper); color: #fff; }
   button.ghost { background: transparent; color: var(--cream); box-shadow: inset 0 0 0 2px var(--track); }
   button[aria-pressed="true"] { background: var(--brass); color: var(--ink); box-shadow: none; }
+  .exit-btn { color: var(--alert); }
   button:focus-visible { outline: 3px solid var(--brass); outline-offset: 2px; }
   button:disabled { opacity: .45; cursor: default; }
   .note { margin: 14px 0 0; font-size: 17px; color: var(--dim); min-height: 1.2em; }
@@ -115,14 +116,15 @@
         <p class="sub">Fifteen broken parts. One rocket.</p>
         <ol class="steps">
           <li>Scan a flat table or floor, then tap to set down the build pad.</li>
-          <li>Grab a piece with the trigger, a pinch or your finger.</li>
+          <li>Pick up a piece with a pinch, the trigger or your finger.</li>
           <li>Carry it to the pad and let go near its spot. It snaps in.</li>
-          <li>Turn a piece with the grip button or Rotate.</li>
+          <li>Pieces turn and lift themselves into place.</li>
         </ol>
         <div class="actions">
           <button id="btn-ar" class="primary">Start in AR</button>
           <button id="btn-cam" class="ghost" hidden>Camera view</button>
           <button id="btn-desk" class="ghost">Play on screen</button>
+          <button class="ghost exit-btn" hidden>Exit</button>
         </div>
         <p id="support" class="note"></p>
       </div>
@@ -144,6 +146,7 @@
       <button id="btn-hint" class="ghost" aria-pressed="false">Hints</button>
       <button id="btn-rotate" class="ghost">Rotate</button>
       <button id="btn-restart" class="ghost">Restart</button>
+      <button class="ghost exit-btn" hidden>Exit</button>
     </div>
     <p id="keys" hidden>Drag a piece, scroll to lift it, Q and E to turn it. Drag empty space to look around.</p>
   </section>
@@ -157,6 +160,7 @@
     </div>
     <div class="actions">
       <button id="btn-again" class="primary">Play again</button>
+      <button class="ghost exit-btn" hidden>Exit</button>
     </div>
   </section>
 </div>

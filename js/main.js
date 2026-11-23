@@ -214,6 +214,8 @@ function fmtTime(s) { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) 
 function act(id) {
   unlockAudio();
   if (id === 'start') { game.phase = 'scan'; dockToView(); }
+  else if (id === 'exit') { exitGame(); return; }
+  else if (id === 'placeAhead') { placeAhead(); return; }
   else if (id === 'hint') game.hints = !game.hints;
   else if (id === 'rotate') {
     const p = pieces.find((q) => q.held) || (now() - lastHeldAt < 5 && lastHeld && !lastHeld.locked ? lastHeld : null);
@@ -277,51 +279,124 @@ function pickPiece(ray) {
 
 // XR controllers, hands and phone touches all arrive as targeting rays.
 const reticle = new THREE.Group();
-reticle.add(new THREE.Mesh(new THREE.RingGeometry(0.07, 0.09, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xc4622d })));
-reticle.add(new THREE.Mesh(new THREE.CircleGeometry(0.012, 24).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xece4cb })));
+const flat = (g) => g.rotateX(-Math.PI / 2);
+reticle.add(new THREE.Mesh(flat(new THREE.RingGeometry(0.135, 0.15, 64)), new THREE.MeshBasicMaterial({ color: 0xc4622d })));            // the build pad
+reticle.add(new THREE.Mesh(flat(new THREE.CircleGeometry(0.135, 48)), new THREE.MeshBasicMaterial({ color: 0xc4622d, transparent: true, opacity: 0.28, depthWrite: false })));
+reticle.add(new THREE.Mesh(flat(new THREE.RingGeometry(0.495, 0.5, 96)), new THREE.MeshBasicMaterial({ color: 0xece4cb, transparent: true, opacity: 0.45, depthWrite: false })));  // the play area
+reticle.add(new THREE.Mesh(flat(new THREE.CircleGeometry(0.012, 24)), new THREE.MeshBasicMaterial({ color: 0xece4cb })));
 reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
 
 const ctrls = [0, 1].map((i) => {
   const c = renderer.xr.getController(i);
-  c.userData = { piece: null, dist: 0, off: new THREE.Vector3(), src: null, lastPiece: null };
+  c.userData = { piece: null, mode: null, dist: 0, off: new THREE.Vector3(), src: null, lastPiece: null, hand: false, lift: 0 };
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0xece4cb }));
   line.scale.z = 1.2; line.visible = false; c.add(line);
   c.addEventListener('connected', (e) => { c.userData.src = e.data; line.visible = e.data.targetRayMode === 'tracked-pointer'; });
-  c.addEventListener('disconnected', () => { c.userData.src = null; line.visible = false; });
+  c.addEventListener('disconnected', () => { endGrab(c); c.userData.src = null; line.visible = false; });
   c.addEventListener('selectstart', () => onSelectStart(c));
-  c.addEventListener('selectend', () => onSelectEnd(c));
+  c.addEventListener('selectend', () => endGrab(c));
   c.addEventListener('squeezestart', () => { if (c.userData.piece) c.userData.piece.group.rotation.y += ROT_STEP; });
   scene.add(c);
   return c;
 });
 
+// Hand tracking: a thumb-and-finger pinch near a piece picks it up directly.
+const hands = [0, 1].map((i) => {
+  const h = renderer.xr.getHand(i);
+  h.addEventListener('pinchstart', () => onPinchStart(i));
+  h.addEventListener('pinchend', () => endGrab(ctrls[i]));
+  scene.add(h);
+  return h;
+});
+const pinchDots = [0, 1].map(() => {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.009, 16, 12), new THREE.MeshBasicMaterial({ color: 0xece4cb, depthTest: false }));
+  m.renderOrder = 9; m.visible = false; scene.add(m); return m;
+});
+const cursors = [0, 1].map(() => {
+  const m = new THREE.Mesh(new THREE.RingGeometry(0.006, 0.011, 24), new THREE.MeshBasicMaterial({ color: 0xccc550, depthTest: false }));
+  m.renderOrder = 10; m.visible = false; scene.add(m); return m;
+});
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
+
+function pinchPoint(i, out) {
+  const j = hands[i].joints, a = j?.['index-finger-tip'], b = j?.['thumb-tip'];
+  if (!a || !b || !a.visible || !b.visible) return null;
+  a.getWorldPosition(out); b.getWorldPosition(_b);
+  return out.add(_b).multiplyScalar(0.5);
+}
+// The point a controller or hand "holds with": pinch point for hands, controller tip otherwise.
+function holdPoint(i, out) {
+  const u = ctrls[i].userData;
+  if (!u.src) return null;
+  return u.src.hand ? pinchPoint(i, out) : out.setFromMatrixPosition(ctrls[i].matrixWorld);
+}
+function nearestPiece(pt, extra = 0) {
+  let best = null, bd = Infinity;
+  for (const p of pieces) {
+    if (p.locked || p.held || p.tween) continue;
+    p.group.getWorldPosition(_c);
+    const d = _c.distanceTo(pt);
+    if (d < p.radius * 1.3 + 0.05 + extra && d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+function grabDirect(i, p, pt) {
+  const c = ctrls[i], u = c.userData;
+  if (u.piece && u.piece !== p) u.piece.held = null;
+  const loc = root.worldToLocal(pt.clone());
+  Object.assign(u, { piece: p, lastPiece: p, mode: 'direct', lift: 0 });
+  u.off.copy(p.group.position).sub(loc);
+  p.held = c; p.vy = 0; lastHeld = p; lastHeldAt = now();
+  beep(330, 0.05); haptic(p, 0.4, 40);
+}
+function onPinchStart(i) {
+  if (game.phase !== 'play') return;
+  const pt = pinchPoint(i, new THREE.Vector3()); if (!pt) return;
+  const p = nearestPiece(pt);
+  if (p) grabDirect(i, p, pt);
+}
+function endGrab(c) {
+  const u = c.userData, p = u.piece;
+  if (!p) return;
+  u.piece = null; u.mode = null;
+  release(p);
+}
+
 function ctrlRay(c) {
   return new THREE.Ray(new THREE.Vector3().setFromMatrixPosition(c.matrixWorld), new THREE.Vector3(0, 0, -1).transformDirection(c.matrixWorld));
 }
 
+function panelButtonAt(ray) {
+  raycaster.set(ray.origin, ray.direction);
+  const h = raycaster.intersectObject(panel)[0];
+  if (!h) return { hit: null, id: null };
+  const x = h.uv.x * PW, y = (1 - h.uv.y) * PH;
+  const b = panelButtons.find((k) => x >= k.x && x <= k.x + k.w && y >= k.y && y <= k.y + k.h);
+  return { hit: h, id: b ? b.id : null };
+}
+
 function onSelectStart(c) {
   unlockAudio();
-  const ray = ctrlRay(c);
+  const i = ctrls.indexOf(c), u = c.userData, ray = ctrlRay(c);
   if (panel.visible) {
-    raycaster.set(ray.origin, ray.direction);
-    const h = raycaster.intersectObject(panel)[0];
-    if (h) {
-      const x = h.uv.x * PW, y = (1 - h.uv.y) * PH;
-      const b = panelButtons.find((k) => x >= k.x && x <= k.x + k.w && y >= k.y && y <= k.y + k.h);
-      if (b) { beep(440, 0.06); act(b.id); return; }
-    }
+    const { id } = panelButtonAt(ray);
+    if (id) { beep(440, 0.06); act(id); return; }
   }
   if (game.phase === 'scan' && reticle.visible) return placeAtReticle();
-  if (game.phase !== 'play') return;
-  const hit = pickPiece(ray);
+  if (game.phase !== 'play' || u.piece) return;
+  if (!u.src?.hand) {                      // controller: a piece touching the tip is grabbed directly
+    const near = nearestPiece(ray.origin, 0.02);
+    if (near) return grabDirect(i, near, ray.origin.clone());
+  }
+  const hit = pickPiece(ray);              // otherwise grab from a distance along the ray
   if (!hit) return;
-  const p = hit.piece, u = c.userData;
+  const p = hit.piece;
   const tgt = ray.origin.clone().addScaledVector(ray.direction, hit.dist); root.worldToLocal(tgt);
-  u.piece = p; u.lastPiece = p; u.lift = 0; u.dist = hit.dist; u.off.copy(p.group.position).sub(tgt);
+  Object.assign(u, { piece: p, lastPiece: p, mode: 'ray', lift: 0, dist: hit.dist });
+  u.off.copy(p.group.position).sub(tgt);
   p.held = c; p.vy = 0;
   beep(330, 0.05); haptic(p, 0.3, 30);
 }
-function onSelectEnd(c) { const p = c.userData.piece; if (p) { c.userData.piece = null; release(p); } }
 
 // Desktop: drag pieces on a horizontal plane, wheel to lift. (registered before OrbitControls listens)
 const mouse = { drag: null };
@@ -368,7 +443,13 @@ addEventListener('keydown', (e) => {
 });
 
 /* ------------------------------------------------------------- XR session */
-let hitSource = null, session = null, needDock = false;
+let hitSource = null, session = null, xrFrames = 0, panelSnap = true;
+const rayHitSources = new Map();   // controller / hand rays also look for surfaces
+
+async function addRaySource(src) {
+  if (!session || src.targetRayMode !== 'tracked-pointer' || rayHitSources.has(src)) return;
+  try { rayHitSources.set(src, await session.requestHitTestSource({ space: src.targetRaySpace })); } catch { /* hit-test unavailable */ }
+}
 
 function arHelp() {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -383,8 +464,7 @@ async function startAR() {
   if (help) { $('#support').textContent = help; return; }
   try {
     session = await navigator.xr.requestSession('immersive-ar', {
-      requiredFeatures: ['hit-test'],
-      optionalFeatures: ['local-floor', 'dom-overlay', 'hand-tracking'],
+      optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'hand-tracking'],
       domOverlay: { root: $('#ui') },
     });
   } catch (err) {
@@ -393,19 +473,48 @@ async function startAR() {
   }
   renderer.xr.setReferenceSpaceType('local-floor');
   await renderer.xr.setSession(session);
-  const viewer = await session.requestReferenceSpace('viewer');
-  hitSource = await session.requestHitTestSource({ space: viewer });
+  try {
+    const viewer = await session.requestReferenceSpace('viewer');
+    hitSource = await session.requestHitTestSource({ space: viewer });
+  } catch { hitSource = null; }                      // no hit-test: "Place ahead" still works
+  rayHitSources.clear();
+  session.addEventListener('inputsourceschange', (e) => {
+    for (const x of e.removed) { rayHitSources.get(x)?.cancel?.(); rayHitSources.delete(x); }
+    for (const x of e.added) addRaySource(x);
+  });
+  for (const x of session.inputSources) addRaySource(x);
   game.mode = 'xr'; game.domMode = !!session.domOverlayState; game.phase = 'title'; game.surfaceFound = false;
-  scene.background = null; floor.visible = false; controls.enabled = false; needDock = true;
+  scene.background = null; floor.visible = false; controls.enabled = false;
+  xrFrames = 0; panelSnap = true; panel.visible = false;
   root.position.set(0, 0, -10); root.rotation.set(0, 0, 0);   // park the table until a surface is chosen
-  hideTable(true);
+  hideTable(true); showPreview();
   session.addEventListener('end', () => {
-    hitSource = null; session = null; game.mode = 'desktop'; game.domMode = true; game.phase = 'title';
-    scene.background = SKY; floor.visible = true; controls.enabled = true; reticle.visible = false; panel.visible = false;
-    root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); hideTable(false); syncUI();
+    hitSource = null; session = null; rayHitSources.clear(); reticle.visible = false; panel.visible = false;
+    for (const d of pinchDots) d.visible = false;
+    for (const d of cursors) d.visible = false;
+    backToDesktop(); syncUI(); markDirty();
   });
   syncUI(); markDirty();
 }
+function showPreview() {           // assembled rocket behind the title card
+  for (const p of pieces) { Object.assign(p, { locked: false, held: null, tween: null, flash: 0, vy: 0 }); p.group.position.copy(p.home); p.group.rotation.set(0, 0, 0); setEmissive(p, 0, 0); }
+  for (const x of slots) { x.filled = null; x.ghost.visible = false; }
+  assembly.rotation.y = 0; celebrate = false;
+  for (const c of ctrls) { c.userData.piece = null; c.userData.mode = null; }
+  Object.assign(game, { wrong: 0, snapped: 0, hints: false });
+}
+function backToDesktop() {
+  game.mode = 'desktop'; game.domMode = true; game.phase = 'title';
+  scene.background = SKY; floor.visible = true; controls.enabled = true;
+  camera.fov = 50; camera.updateProjectionMatrix(); camera.position.set(0.7, 0.62, 0.85); camera.quaternion.identity();
+  controls.target.set(0.05, 0.16, 0); controls.update();
+  root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); hideTable(false); showPreview();
+}
+function exitGame() {
+  if (session) session.end();
+  else if (game.mode === 'cam') stopCam();
+}
+
 /* --------------------------------------- camera view: any phone, no WebXR needed */
 const CAM_H = 0.7;                       // assumed height of the phone above the table (m)
 const camVideo = document.createElement('video');
@@ -444,6 +553,14 @@ async function startCam() {
   root.position.set(0, 0, 0); root.rotation.set(0, 0, 0); hideTable(true);
   syncUI(); markDirty();
 }
+function stopCam() {
+  camVideo.srcObject?.getTracks().forEach((t) => t.stop());
+  camVideo.srcObject = null; camVideo.remove();
+  removeEventListener('deviceorientation', onOrient, true);
+  orient.have = false; orient.a0 = null; reticle.visible = false;
+  document.documentElement.style.background = ''; document.body.style.background = '';
+  backToDesktop(); syncUI(); markDirty();
+}
 function updateCamReticle() {
   const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
   let found = false;
@@ -464,13 +581,23 @@ function placeCam() {
 
 function hideTable(h) { assembly.visible = !h; pad.visible = !h; refGroup.visible = !h; shadowCatcher.visible = !h; }
 
-function placeAtReticle() {
-  root.position.setFromMatrixPosition(reticle.matrix);
-  const cp = camera.getWorldPosition(new THREE.Vector3());
-  root.rotation.y = Math.atan2(cp.x - root.position.x, cp.z - root.position.z);
+function headPose() {
+  if (renderer.xr.isPresenting) { const xc = renderer.xr.getCamera(); return { pos: xc.position, q: xc.quaternion }; }
+  return { pos: camera.position, q: camera.quaternion };
+}
+function finishPlace() {
+  const { pos } = headPose();
+  root.rotation.y = Math.atan2(pos.x - root.position.x, pos.z - root.position.z);   // the player stands on +z
   hideTable(false); reticle.visible = false;
   scatter(); game.phase = 'play'; dockToWorld(); beep(600, 0.1, 'triangle'); toast('Pieces scattered');
   syncUI(); markDirty();
+}
+function placeAtReticle() { root.position.setFromMatrixPosition(reticle.matrix); finishPlace(); }
+function placeAhead() {            // fallback when no surface is detected: set the game on the floor in front of you
+  const { pos, q } = headPose(), f = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+  f.y = 0; if (f.lengthSq() < 1e-4) f.set(0, 0, -1); f.normalize();
+  root.position.set(pos.x + f.x * 0.9, 0, pos.z + f.z * 0.9);
+  finishPlace();
 }
 
 function startDesktop() {
@@ -479,14 +606,18 @@ function startDesktop() {
 }
 
 function handleHitTest(frame) {
-  if (!frame || !hitSource || game.phase !== 'scan') { if (game.phase !== 'scan') reticle.visible = false; return; }
+  if (!frame || game.phase !== 'scan') { if (game.phase !== 'scan' && game.mode === 'xr') reticle.visible = false; return; }
   const space = renderer.xr.getReferenceSpace();
   const m = new THREE.Matrix4();
   let found = false;
-  for (const r of frame.getHitTestResults(hitSource)) {
-    const pose = r.getPose(space); if (!pose) continue;
-    m.fromArray(pose.transform.matrix);
-    if (m.elements[5] > 0.85) { reticle.matrix.copy(m); found = true; break; }   // horizontal surfaces only
+  const sources = [...rayHitSources.values()]; if (hitSource) sources.push(hitSource);   // controller / hand rays first, then gaze
+  for (const src of sources) {
+    for (const r of frame.getHitTestResults(src)) {
+      const pose = r.getPose(space); if (!pose) continue;
+      m.fromArray(pose.transform.matrix);
+      if (m.elements[5] > 0.85) { reticle.matrix.copy(m); found = true; break; }   // horizontal surfaces only
+    }
+    if (found) break;
   }
   reticle.visible = found;
   if (found !== game.surfaceFound) { game.surfaceFound = found; syncUI(); markDirty(); }
@@ -497,23 +628,27 @@ const PW = 1024, PH = 640;
 const panelCanvas = Object.assign(document.createElement('canvas'), { width: PW, height: PH });
 const pctx = panelCanvas.getContext('2d');
 const panelTex = new THREE.CanvasTexture(panelCanvas); panelTex.colorSpace = THREE.SRGBColorSpace;
-const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.4), new THREE.MeshBasicMaterial({ map: panelTex, transparent: true, toneMapped: false }));
+const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.45), new THREE.MeshBasicMaterial({ map: panelTex, transparent: true, toneMapped: false }));
 panel.visible = false; scene.add(panel);
-let panelButtons = [], panelDirty = true, lastPanelDraw = 0;
+let panelButtons = [], panelDirty = true, lastPanelDraw = 0, panelHover = null;
 const goalImg = new Image(); goalImg.src = GOAL_IMG; goalImg.onload = markDirty;
 let uiDirty = false;
 function markDirty() { panelDirty = true; uiDirty = true; }
 
-function dockToView() { if (game.mode === 'xr') needDock = true; }
-function dockNow() {
-  const cp = camera.getWorldPosition(new THREE.Vector3()), dir = camera.getWorldDirection(new THREE.Vector3());
-  dir.y = 0; dir.normalize();
-  panel.position.copy(cp).addScaledVector(dir, 0.9); panel.position.y = cp.y - 0.05;
-  panel.rotation.set(0, Math.atan2(cp.x - panel.position.x, cp.z - panel.position.z), 0);
+function dockToView() { if (game.mode === 'xr') panelSnap = true; }
+// Title, scan and finish screens float in front of you and drift after your gaze.
+function followHead(dt) {
+  const { pos, q } = headPose(), f = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+  f.y = 0; if (f.lengthSq() < 1e-4) return; f.normalize();
+  const target = pos.clone().addScaledVector(f, 0.85); target.y = pos.y - 0.08;
+  if (panelSnap || panel.position.distanceTo(target) > 0.3) panel.position.lerp(target, panelSnap ? 1 : 1 - Math.exp(-dt * 3));
+  const want = Math.atan2(pos.x - panel.position.x, pos.z - panel.position.z);
+  panel.rotation.y = panelSnap ? want : panel.rotation.y + angDiff(want, panel.rotation.y) * (1 - Math.exp(-dt * 4));
+  panelSnap = false; panel.updateMatrixWorld();
 }
-function dockToWorld() {
+function dockToWorld() {           // during play the panel stands behind the pad
   panel.position.copy(root.localToWorld(new THREE.Vector3(0, 0.3, -0.56)));
-  panel.rotation.set(0, root.rotation.y, 0); needDock = false;
+  panel.rotation.set(0, root.rotation.y, 0); panel.updateMatrixWorld();
 }
 
 function roundRect(c, x, y, w, h, r) {
@@ -527,10 +662,15 @@ function text(s, x, y, size, color, weight = 600, align = 'left', maxW = 0) {
 }
 function button(id, label, x, y, w, h, o = {}) {
   panelButtons.push({ id, x, y, w, h });
+  const hov = panelHover === id;
   pctx.fillStyle = o.fill || (o.active ? COL.brass : 'transparent');
   roundRect(pctx, x, y, w, h, 16); pctx.fill();
-  if (!o.fill && !o.active) { pctx.strokeStyle = COL.track; pctx.lineWidth = 4; roundRect(pctx, x + 2, y + 2, w - 4, h - 4, 14); pctx.stroke(); }
-  text(label, x + w / 2, y + h / 2 + 12, 38, o.fill ? '#fff' : o.active ? COL.ink : COL.cream, 700, 'center');
+  if (hov && (o.fill || o.active)) { pctx.fillStyle = 'rgba(255,255,255,0.18)'; roundRect(pctx, x, y, w, h, 16); pctx.fill(); }
+  if (!o.fill && !o.active) {
+    pctx.fillStyle = hov ? 'rgba(236,228,203,0.12)' : 'transparent'; roundRect(pctx, x, y, w, h, 16); pctx.fill();
+    pctx.strokeStyle = hov ? COL.brass : (o.danger ? COL.alert : COL.track); pctx.lineWidth = hov ? 6 : 4; roundRect(pctx, x + 2, y + 2, w - 4, h - 4, 14); pctx.stroke();
+  }
+  text(label, x + w / 2, y + h / 2 + 12, 38, o.fill ? '#fff' : o.active ? COL.ink : (o.danger ? COL.alert : COL.cream), 700, 'center');
 }
 function goalThumb(x, y, w, h) {
   pctx.save(); roundRect(pctx, x, y, w, h, 14); pctx.clip();
@@ -550,14 +690,18 @@ function drawPanel() {
   if (game.phase === 'title') {
     text('Rocket Rebuild', 52, 118, 104, COL.cream, 700, 'left', 700);
     text('Fifteen broken parts. One rocket.', 52, 170, 38, COL.brass, 500, 'left', 700);
-    const steps = ['Scan a flat table or floor, then place the pad.', 'Grab a piece: trigger, pinch or touch.', 'Release it near its spot and it snaps in.', 'Turn a piece with grip or the Rotate button.'];
+    const steps = ['Aim at a table or the floor, then place the pad.', 'Pinch a piece, or squeeze the trigger, to pick it up.', 'Let go near its spot and it snaps in.', 'Pieces turn and lift themselves into place.'];
     steps.forEach((s, i) => { const y = 250 + i * 58; text(String(i + 1), 52, y, 46, COL.copper, 700); text(s, 100, y - 2, 36, COL.cream, 500, 'left', 660); });
     goalThumb(782, 52, 190, 294);
     button('start', 'Start', 52, 506, 300, 84, { fill: COL.copper });
+    button('exit', 'Exit', 372, 506, 180, 84, { danger: true });
   } else if (game.phase === 'scan') {
-    text(game.surfaceFound ? 'Flat surface found' : 'Looking for a flat surface', 52, 150, 84, COL.cream, 700, 'left', 920);
-    text(game.surfaceFound ? 'Point at the ring and press the trigger, or pinch.' : 'Move slowly over a table or the floor.', 52, 230, 44, game.surfaceFound ? COL.brass : COL.dim, 500, 'left', 920);
-    text('A ring appears when a surface is ready.', 52, 290, 36, COL.dim, 500);
+    text(game.surfaceFound ? 'Surface found' : 'Find a surface', 52, 130, 100, COL.cream, 700, 'left', 920);
+    text(game.surfaceFound ? 'Pinch or squeeze the trigger to place the game there.' : 'Point a controller or your hand at a table or the floor.', 52, 205, 42, game.surfaceFound ? COL.brass : COL.dim, 500, 'left', 920);
+    text('A ring shows where the pad and play area will go.', 52, 262, 34, COL.dim, 500, 'left', 920);
+    text('No ring? Use Place ahead to set it on the floor in front of you.', 52, 312, 34, COL.dim, 500, 'left', 920);
+    button('placeAhead', 'Place ahead', 52, 470, 330, 96, { fill: COL.copper });
+    button('exit', 'Exit', 742, 470, 230, 96, { danger: true });
   } else if (game.phase === 'play') {
     text(`${game.snapped} of ${game.total}`, 52, 130, 110, COL.cream, 700);
     text('parts placed', 52, 176, 36, COL.dim, 500);
@@ -572,12 +716,14 @@ function drawPanel() {
     button('hint', 'Hints', 52, 470, 210, 96, { active: game.hints });
     button('rotate', 'Rotate', 282, 470, 210, 96);
     button('restart', 'Restart', 512, 470, 210, 96);
+    button('exit', 'Exit', 742, 470, 230, 96, { danger: true });
   } else if (game.phase === 'done') {
     text('Rocket rebuilt', 52, 150, 112, COL.cream, 700);
     text(game.wrong === 0 ? 'Not a single wrong move.' : 'Every part is back where it belongs.', 52, 212, 42, COL.brass, 500);
     text(fmtTime(game.tDone - game.t0), 52, 360, 120, COL.cream, 700); text('time', 52, 404, 34, COL.dim, 500);
     text(String(game.wrong), 420, 360, 120, COL.cream, 700); text('wrong moves', 420, 404, 34, COL.dim, 500);
     button('again', 'Play again', 52, 480, 330, 96, { fill: COL.copper });
+    button('exit', 'Exit', 400, 480, 200, 96, { danger: true });
   }
   panelTex.needsUpdate = true;
 }
@@ -604,6 +750,7 @@ function syncUI() {
   $('#keys').textContent = cam ? 'Drag a piece with your finger. Tilt the phone to look around.' : 'Drag a piece, scroll to lift it, Q and E to turn it. Drag empty space to look around.';
   const touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
   $('#btn-cam').hidden = xr || cam || !touch;
+  for (const b of document.querySelectorAll('.exit-btn')) b.hidden = !(xr || cam);
   const arBtn = $('#btn-ar');
   if (xr) { arBtn.textContent = 'Begin'; arBtn.disabled = false; $('#btn-desk').hidden = true; $('#support').hidden = true; }
   else { arBtn.textContent = 'Start in AR'; $('#btn-desk').hidden = false; $('#support').hidden = false; }
@@ -631,6 +778,7 @@ function updateToastDOM() {
 for (const el of document.querySelectorAll('#ui .hit')) el.addEventListener('beforexrselect', (e) => e.preventDefault());
 $('#btn-desk').addEventListener('click', startDesktop);
 $('#btn-cam').addEventListener('click', startCam);
+for (const b of document.querySelectorAll('.exit-btn')) b.addEventListener('click', exitGame);
 $('#banner').addEventListener('click', (e) => { if (e.target.id === 'btn-place') placeCam(); });
 $('#btn-ar').addEventListener('click', () => (game.mode === 'xr' ? act('start') : startAR()));
 $('#btn-hint').addEventListener('click', () => act('hint'));
@@ -643,6 +791,19 @@ addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; cam
 const clock = new THREE.Clock();
 const tmp = new THREE.Vector3();
 
+function updatePanelHover() {
+  let hov = null;
+  for (let i = 0; i < ctrls.length; i++) {
+    const cur = cursors[i]; cur.visible = false;
+    if (!panel.visible || !ctrls[i].userData.src) continue;
+    const { hit, id } = panelButtonAt(ctrlRay(ctrls[i]));
+    if (!hit) continue;
+    cur.visible = true; cur.position.copy(hit.point).addScaledVector(_c.set(0, 0, 1).applyQuaternion(panel.quaternion), 0.004); cur.quaternion.copy(panel.quaternion);
+    if (id && !hov) hov = id;
+  }
+  if (hov !== panelHover) { panelHover = hov; panelDirty = true; }
+}
+
 function update(dt, frame) {
   handleHitTest(frame);
   if (game.mode === 'cam') {
@@ -650,26 +811,45 @@ function update(dt, frame) {
     if (game.phase === 'scan') updateCamReticle(); else reticle.visible = false;
   }
   if (game.mode === 'xr') {
-    panel.visible = !game.domMode && game.phase !== 'loading';
-    if (needDock && frame) { if (game.phase === 'play') dockToWorld(); else dockNow(); needDock = false; }
+    if (frame) xrFrames++;
+    panel.visible = !game.domMode && game.phase !== 'loading' && xrFrames > 3;   // wait until the headset pose is real
+    if (panel.visible && game.phase !== 'play') followHead(dt);
     if (reticle.visible) reticle.visible = game.phase === 'scan';
+    updatePanelHover();
   }
 
-  // held pieces follow their ray
-  for (const c of ctrls) {
-    const p = c.userData.piece; if (!p) continue;
-    const ray = ctrlRay(c);
-    tmp.copy(ray.origin).addScaledVector(ray.direction, c.userData.dist); root.worldToLocal(tmp).add(c.userData.off);
-    const gp = c.userData.src?.gamepad;
+  // held pieces follow the controller tip / pinch point (direct) or the ray (far)
+  for (let i = 0; i < ctrls.length; i++) {
+    const c = ctrls[i], u = c.userData, p = u.piece; if (!p) continue;
+    if (u.mode === 'direct') {
+      if (!holdPoint(i, _a)) continue;               // tracking lost for a moment: keep the piece where it is
+      tmp.copy(_a); root.worldToLocal(tmp).add(u.off);
+    } else {
+      const ray = ctrlRay(c);
+      tmp.copy(ray.origin).addScaledVector(ray.direction, u.dist); root.worldToLocal(tmp).add(u.off);
+    }
+    const gp = u.src?.gamepad;
     const ay = gp?.axes?.[3] || 0;                                   // thumbstick up/down lifts
-    if (Math.abs(ay) > 0.25) c.userData.lift = THREE.MathUtils.clamp((c.userData.lift || 0) - ay * dt * 0.35, -0.1, 0.5);
-    tmp.y = Math.max(tmp.y + (c.userData.lift || 0), p.restY + HOVER);
+    if (Math.abs(ay) > 0.25) u.lift = THREE.MathUtils.clamp(u.lift - ay * dt * 0.35, -0.1, 0.5);
+    tmp.y = Math.max(tmp.y + u.lift, p.restY + HOVER);
     assist(p, tmp, dt);
     p.target = (p.target || new THREE.Vector3()).copy(tmp);
     p.group.position.lerp(tmp, 1 - Math.pow(1e-4, dt));
     const ax = gp?.axes?.[2] || 0;
     if (Math.abs(ax) > 0.25) p.group.rotation.y -= ax * dt * 3;
   }
+
+  // glow on pieces that a hand or controller is close enough to grab; dots at pinch points
+  const glow = new Set();
+  for (let i = 0; i < ctrls.length; i++) {
+    const u = ctrls[i].userData, dot = pinchDots[i];
+    dot.visible = false;
+    if (game.mode !== 'xr' || game.phase !== 'play' || !u.src) continue;
+    const pt = holdPoint(i, _a); if (!pt) continue;
+    if (u.src.hand) { dot.visible = true; dot.position.copy(pt); dot.scale.setScalar(u.piece ? 1.7 : 1); }
+    if (!u.piece) { const n = nearestPiece(pt, u.src.hand ? 0 : 0.02); if (n) glow.add(n); }
+  }
+  for (const p of pieces) p.glow = glow.has(p);
 
   const md = mouse.drag;   // mouse / touch drag: follow the pointer with the same assists as XR
   if (md?.raw) {
@@ -701,7 +881,9 @@ function update(dt, frame) {
       if (g.position.y > p.restY + 1e-4) { p.vy -= 3 * dt; g.position.y = Math.max(p.restY, g.position.y + p.vy * dt); if (g.position.y === p.restY) p.vy = 0; }
       else g.position.y = p.restY;
     }
-    if (p.flash > 0) { p.flash = Math.max(0, p.flash - dt * 2.2); setEmissive(p, p.flashHex || 0xffffff, p.flash * 0.6); }
+    if (p.flash > 0) { p.flash = Math.max(0, p.flash - dt * 2.2); setEmissive(p, p.flashHex || 0xffffff, p.flash * 0.6); p._g = false; }
+    else if (p.glow) { setEmissive(p, 0xece4cb, 0.3); p._g = true; }
+    else if (p._g) { setEmissive(p, 0, 0); p._g = false; }
   }
 
   if (celebrate) assembly.rotation.y += dt * 0.7;
@@ -730,8 +912,7 @@ renderer.setAnimationLoop((t, frame) => { update(Math.min(clock.getDelta(), 0.05
   }
   hideTable(false);
   game.phase = 'title';
-  // Preview the pieces already assembled behind the title card
-  for (const p of pieces) { p.group.position.copy(p.home); }
+  showPreview();   // the pieces assembled behind the title card
   const support = $('#support'), arBtn = $('#btn-ar');
   arBtn.disabled = false;
   const help = arHelp();
@@ -743,5 +924,5 @@ renderer.setAnimationLoop((t, frame) => { update(Math.min(clock.getDelta(), 0.05
   support.textContent = note;
   syncUI(); markDirty();
   window.game = game;   // handy for debugging in the console
-  window.__rr = { pieces, slots, release, camera, root, THREE, S, panel, drawPanel };
+  window.__rr = { pieces, slots, release, camera, root, THREE, S, panel, drawPanel, renderer, headPose, ctrls, hands, reticle, nearestPiece, act };
 })();
